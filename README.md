@@ -4,25 +4,50 @@
 
 ## Overview
 
-P2N reuses a shared Transformer core through Jacobi updates while the prefix
-and suffix run once. Vanilla and P2N use the same physical layers and parameters.
-This repository implements Qwen3-style pretraining on the official
+P2N (Previous to Next) feeds the previous token's deep core output into the
+current token's prefix representation. The Transformer is split into prefix,
+core, and suffix layers; Vanilla and P2N use the same physical layers and
+parameters. This repository provides Qwen3-style pretraining on the official
 [Megatron-LM](https://github.com/NVIDIA/Megatron-LM) stack, with Transformer
 Engine and FlashAttention.
 
 ![P2N overview](assets/p2n-overview.png)
 
-For prefix output $X$, the core computation is:
+**Autoregressive decoding (right).** Let $x_t$ be the current token's prefix
+representation and $h_{t-1}$ the previous token's core output. Since decoding
+proceeds from left to right, $h_{t-1}$ is already available. P2N adds it to
+$x_t$ before the core:
+
+$$
+h_t=\mathrm{Core}(x_t+h_{t-1}),\qquad h_0=0.
+$$
+
+The suffix and language-model head then predict the next token, and $h_t$ is
+cached for the following decoding step. Each physical layer runs once per
+current token; the feedback adds only one vector addition per step. Reusing
+previously completed deep computation extends effective depth across tokens.
+
+**Parallel training (left).** Applying the same recurrence directly during
+teacher-forced training would require each token to wait for the preceding
+token's core output. P2N preserves token parallelism with Jacobi iteration.
+The prefix first processes the full sequence once to produce fixed inputs
+$X$. A warm pass initializes the core states, followed by $K$ parallel updates:
 
 $$
 H^{(0)}=\mathrm{Core}(X),\qquad
-H^{(k+1)}=\mathrm{Core}\!\left(X+\mathrm{ShiftPrev}(H^{(k)})\right).
+H^{(k+1)}=\mathrm{Core}\!\left(X+\mathrm{ShiftPrev}(H^{(k)})\right),
+\quad k=0,\ldots,K-1.
 $$
 
-`ShiftPrev` shifts representations one token right, zeros the first position,
-and resets after EOD. Training samples $K\in\{2,3\}$ per optimizer step;
-validation uses $K=3$. Gradients flow through every pass. The figure also
-illustrates inference; this release implements pretraining only.
+Each update reads only the completed outputs of the preceding iteration, so
+all token positions within that update can run in parallel. `ShiftPrev` shifts
+these outputs one position right, filling the first position and document
+boundaries with zeros. After the final update, the suffix runs once on
+$H^{(K)}$ to compute the language-modeling loss. The core shares parameters
+across the warm pass and all updates, with gradients through the complete
+unrolled computation. Training samples $K$ uniformly from $\{2,3\}$;
+validation uses $K=3$. Only the middle-third core is repeated, keeping the
+extra training computation confined to that part of the model.
 
 ## Submit training jobs
 
