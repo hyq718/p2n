@@ -75,55 +75,45 @@ Megatron-LM is pinned to `core_v0.13.0`
 The tested runtime uses PyTorch 2.6.0, Transformer Engine 2.13.0,
 FlashAttention 2.7.4.post1, and Apex CUDA extensions.
 
-## Model configurations
+## Quick-start configuration (150M)
 
-| `MODEL_SIZE` | Parameters | Layers | Hidden / FFN | Q / KV heads | Embeddings | Microbatch | Steps / tokens |
-| --- | ---: | ---: | --- | --- | --- | ---: | --- |
-| `70m` (default) | 74,325,248 | 6 | 512 / 2,048 | 8 / 2 | Untied | 4 | 2,836 / 1.487B |
-| `150m` | 149,541,120 | 12 | 768 / 3,328 | 12 / 4 | Tied | 8 | 5,705 / 2.991B |
+Set `MODEL_SIZE=150m` in the job example above. This configuration follows
+Appendix A, Table 6 of the P2N paper and has **149,541,120 parameters**.
+Vanilla and P2N use the same model and training settings.
 
-The 150M architecture follows Appendix A, Table 6 of the P2N paper.
-Both recipes target 20 tokens per parameter with sequence length 2,048,
-global batch 256, seed 42, BF16, GQA, Q/K normalization, RMSNorm, SwiGLU,
-head dimension 64, RoPE base `1e6`, and zero dropout. AdamW uses betas
-`(0.9, 0.95)`, epsilon `1e-8`, weight decay `0.1`, and clipping at `1.0`.
-Peak LR is `1.5e-3`, with 5% warmup and cosine decay to `1.5e-4`.
-With eight GPUs, accumulation is eight microbatches for 70M and four for 150M.
+### Model
 
-The default P2N core is the middle third: layers 3–4 for 70M and 5–8 for 150M.
-To select a different range, pass **one-based, inclusive** bounds:
+| Setting | Value |
+| --- | --- |
+| Transformer layers | 12 |
+| Hidden size | 768 |
+| FFN size | 3,328 |
+| Attention | GQA, 12 query heads / 4 KV heads, head dimension 64 |
+| Vocabulary size | 50,304 |
+| Input/output embeddings | Shared |
+| Normalization | RMSNorm (`eps=1e-6`) and Q/K normalization |
+| Activation | SwiGLU |
+| Position encoding | RoPE, base `1e6` |
+| Linear biases / dropout | Disabled / 0 |
+| Initialization standard deviation | 0.02 |
+| P2N core | Layers 5–8 (one-based, inclusive) |
 
-```bash
-MODEL_SIZE=150m bash scripts/train.sh p2n --p2n-core-start 5 --p2n-core-end 8
-```
+### Training
 
-Extra arguments are passed to Megatron; apply the same overrides to both
-methods for an aligned comparison. P2N supports dense pretraining with
-`TP=PP=CP=1`, zero dropout, and no activation recomputation, FP8, CPU
-offloading, THD packing, or inference cache. Vanilla retains upstream support.
-
-## Checkpoints and validation
-
-Checkpoints are saved every 200 steps under
-`$OUTPUT_ROOT/$MODEL_SIZE-$METHOD`; validation runs every 100 steps.
-Resume from a checkpoint directory:
-
-```bash
-MODEL_SIZE=150m RESUME_CHECKPOINT=/path/to/your_checkpoint/150m-p2n \
-  bash scripts/train.sh p2n
-```
-
-For W&B resume, also set `WANDB_RUN_ID=your_run_id` and `WANDB_RESUME=allow`.
-Compare losses at equal steps or tokens. Use measured seconds per step for
-speed: Megatron's default TFLOPS estimate does not count P2N's repeated core.
-
-```bash
-pip install pytest
-python -m pytest -q tests/test_recurrence.py
-python tests/check_gpu.py  # one GPU; checks TE/FlashAttention outputs and gradients
-```
-
-The repository contains the pretraining adapter (`pretrain.py`), recurrence
-(`p2n/`), launchers (`scripts/`), checks (`tests/`), and overview figure
-(`assets/`). Megatron-LM stays in `vendor/Megatron-LM` as a submodule.
-See [LICENSE](LICENSE) for licensing terms and preserve dependency notices.
+| Setting | Value |
+| --- | --- |
+| Training budget | 2,991,063,040 tokens, approximately TPP20 |
+| Optimizer steps | 5,705 |
+| Sequence length | 2,048 |
+| GPUs | 8, data parallelism |
+| Global batch size | 256 sequences |
+| Per-GPU micro-batch size | 8 sequences |
+| Gradient accumulation | 4 micro-batches per optimizer step |
+| Precision / attention backend | BF16 / Transformer Engine + FlashAttention |
+| Optimizer | AdamW, betas `(0.9, 0.95)`, epsilon `1e-8` |
+| Learning rate | `1.5e-3`, cosine decay to `1.5e-4` |
+| Warmup | 286 steps, approximately 5% |
+| Weight decay | 0.1 |
+| Gradient clipping | 1.0 |
+| Activation recomputation | Disabled |
+| Random seed | 42 |
